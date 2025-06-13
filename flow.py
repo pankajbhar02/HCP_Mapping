@@ -81,7 +81,7 @@ st.markdown("""
 def load_data():
     """Loads data from a default path and strips whitespace."""
     try:
-        df = pd.read_csv(r"C:\Users\pankaj.kumar\Downloads\Main DB_1.csv")
+        df = pd.read_csv("Main_DB.csv")
     except FileNotFoundError:
         st.error("Default CSV file not found at 'C:\\Users\\pankaj.kumar\\Downloads\\Main DB_1.csv'. Please upload the file or check the path.")
         uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
