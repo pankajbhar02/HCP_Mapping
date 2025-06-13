@@ -111,7 +111,7 @@ def load_and_prepare_data():
     """
     try:
         # Update the path to your actual CSV file
-        df = pd.read_csv("Main DB_1.csv")
+        df = pd.read_csv(r"C:\Users\pankaj.kumar\Downloads\Main DB_1.csv")
     except FileNotFoundError:
         st.error("Default CSV file not found. Please upload the file to proceed.")
         uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
