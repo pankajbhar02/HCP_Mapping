@@ -10,25 +10,30 @@ st.set_page_config(layout="wide")
 st.markdown("""
     <style>
     .deckgl-container {
-        height: 80vh !important;
+        height: 90vh !important; /* Increased map height to cover most of the page */
+        margin-top: 0px !important; /* Remove space above map */
+    }
+    .main .block-container {
+        padding-top: 1rem !important; /* Reduce space above heading and filters */
+        padding-bottom: 1rem !important;
     }
     .summary-box, .filter-box {
         background-color: #ffffff;
-        padding: 20px;
-        border-radius: 10px;
+        padding: 10px;
+        border-radius: 5px;
         border: 1px solid #e0e0e0;
         box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        margin: 20px 10px;
+        margin: 10px 10px; /* Reduced margin for tighter layout */
         height: 100%;
     }
     .summary-box h3, .filter-box h3 {
         color: #2c3e50;
-        margin-bottom: 15px;
-        font-size: 20px;
+        margin-bottom: 10px;
+        font-size: 10px;
     }
     .summary-box p, .filter-box p {
         margin: 5px 0;
-        font-size: 16px;
+        font-size: 15px;
         color: #34495e;
     }
     .summary-box .highlight, .filter-box .highlight {
@@ -55,122 +60,225 @@ st.markdown("""
         background-color: #f8f9fa;
         color: #2c3e50;
     }
-    /* Updated tooltip class to be displayed by pydeck */
-    .pydeck-tooltip-custom { /* Unique class for pydeck's managed tooltip */
+    .pydeck-tooltip-custom {
         background-color: #2c3e50;
         color: white;
         padding: 10px;
         border-radius: 5px;
         font-family: sans-serif;
         border: 1px solid #e0e0e0;
-        max-width: 300px; /* Limit tooltip width */
-        white-space: normal; /* Allow text wrapping */
+        max-width: 300px;
+        white-space: normal;
     }
     .pydeck-tooltip-custom div {
-        margin-bottom: 5px;
+        margin-bottom: 2px;
     }
     .pydeck-tooltip-custom .highlight {
         color: #e74c3c;
-        font-weight: bold;
+        font-weight: light;
+    }
+    .sidebar .sidebar-content {
+        width: 300px !important;
+    }
+    /* Ensure summary sections appear below map */
+    .summary-section {
+        margin-top: 20px;
+    }
+    /* Reduce size of filter boxes above the map (State, City, ZIP) */
+    .stSelectbox > div > div > select {
+        font-size: 10px !important; /* Smaller font for selectboxes */
+        padding: 2px !important; /* Minimal padding */
+        height: 24px !important; /* Reduced height */
+        line-height: 1.2 !important; /* Adjust line height for better text alignment */
+    }
+    .stSelectbox > div > label {
+        font-size: 10px !important; /* Smaller label font size */
+        margin-bottom: 2px !important; /* Reduced margin */
+    }
+    /* Reduce column spacing for filters */
+    .st-emotion-cache-1r4qj8v {
+        padding: 0 5px !important; /* Reduced padding between filter columns */
     }
     </style>
 """, unsafe_allow_html=True)
 
-# --- Data Loading & Preparation ---
+# --- OPTIMIZATION 1: EFFICIENT DATA LOADING & PREPARATION ---
 @st.cache_data
-def load_data():
-    """Loads data from a default path and strips whitespace."""
+def load_and_prepare_data():
+    """
+    Loads data and performs all initial, one-time transformations.
+    This function is cached, so these expensive operations run only once.
+    """
     try:
-        df = pd.read_csv("Main_DB.csv")
+        # Update the path to your actual CSV file
+        df = pd.read_csv(r"C:\Users\pankaj.kumar\Downloads\Main DB_1.csv")
     except FileNotFoundError:
-        st.error("Default CSV file not found at 'C:\\Users\\pankaj.kumar\\Downloads\\Main DB_1.csv'. Please upload the file or check the path.")
+        st.error("Default CSV file not found. Please upload the file to proceed.")
         uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
         if uploaded_file is not None:
             df = pd.read_csv(uploaded_file)
         else:
-            st.stop() # Stop if no file is found or uploaded
+            st.stop()
 
+    # --- Initial Cleaning and Renaming ---
     for col in df.columns:
         if df[col].dtype == "object":
             df[col] = df[col].str.strip()
-            
-    # --- IMPORTANT: Rename columns to be compatible with pydeck tooltip ---
-    # Replace spaces with underscores and convert to lowercase for all columns
+    
     df.columns = [col.replace(' ', '_').lower() for col in df.columns]
+
+    # --- Column Validation ---
+    required_columns = [
+        'npi_1', 'zip1', 'lat1', 'long1', 'city1', 'state1', 'influence_score_1', 'no._of_connections_hcp_1',
+        'npi_2', 'zip2', 'lat2', 'long2', 'city2', 'state2', 'influence_score_2', 'no._of_connections_hcp_2',
+        'maximum_influence_score', 'maximum_connections', 'npi_with_max_connections', 'papers', 'panels',
+        'trials', 'affiliations', 'events', 'overall_connection_strength', 'interzip_connection',
+        'intercity_connection', 'interstate_connection'
+    ]
+    missing_cols = [col for col in required_columns if col not in df.columns]
+    if missing_cols:
+        st.error(f"Your CSV is missing required columns (after renaming): {', '.join(missing_cols)}")
+        st.stop()
+
+    # --- Data Validation ---
+    df = df.dropna(subset=['lat1', 'long1', 'lat2', 'long2', 'overall_connection_strength'])
+    df = df[df['overall_connection_strength'] > 0]  # Ensure valid connections
+    df['maximum_influence_score'] = pd.to_numeric(df['maximum_influence_score'], errors='coerce')
+    df = df.dropna(subset=['maximum_influence_score'])
+
+    # --- One-Time Data Structuring (Source/Target determination) ---
+    df['is_source_1'] = df['influence_score_1'] >= df['influence_score_2']
+    df['source_npi'] = np.where(df['is_source_1'], df['npi_1'], df['npi_2'])
+    df['target_npi'] = np.where(df['is_source_1'], df['npi_2'], df['npi_1'])
+    df['source_city'] = np.where(df['is_source_1'], df['city1'], df['city2'])
+    df['source_state'] = np.where(df['is_source_1'], df['state1'], df['state2'])
+    df['source_influence'] = np.where(df['is_source_1'], df['influence_score_1'], df['influence_score_2'])
+    df['target_city'] = np.where(df['is_source_1'], df['city2'], df['city1'])
+    df['target_state'] = np.where(df['is_source_1'], df['state2'], df['state1'])
+    df['target_influence'] = np.where(df['is_source_1'], df['influence_score_2'], df['influence_score_1'])
+
+    source_long = np.where(df['is_source_1'], df['long1'], df['long2'])
+    source_lat = np.where(df['is_source_1'], df['lat1'], df['lat2'])
+    target_long = np.where(df['is_source_1'], df['long2'], df['long1'])
+    target_lat = np.where(df['is_source_1'], df['lat2'], df['lat1'])
+    df['source_position'] = list(zip(source_long, source_lat))
+    df['target_position'] = list(zip(target_long, target_lat))
+
+    # --- One-Time Thickness Level Calculation ---
+    def calculate_thickness_level(value):
+        if 0 <= value <= 0.25:
+            return 0.5
+        elif 0.25 < value <= 0.5:
+            return 1
+        elif 0.5 < value <= 0.75:
+            return 1.5
+        elif 0.75 < value <= 1.00:
+            return 2
+        elif 1.00 < value <= 1.25:
+            return 2.5
+        elif 1.25 < value <= 1.5:
+            return 3
+        return 3.5  # Default for values above 1.5
+
+    df['thickness_level'] = df['overall_connection_strength'].apply(calculate_thickness_level)
     
     return df
 
-# --- Show loading spinner ---
-with st.spinner("Loading data..."):
-    df = load_data()
+# --- Show loading spinner while preparing data ---
+with st.spinner("Loading and preparing data..."):
+    df = load_and_prepare_data()
 
-# --- Column Validation (adjusting to new column names) ---
-# Update required_columns to match the new snake_case, lowercase format
-required_columns = [
-    'npi_1', 'zip1', 'lat1', 'long1', 'city1', 'state1', 'influence_score_1',
-    'npi_2', 'zip2', 'lat2', 'long2', 'city2', 'state2', 'influence_score_2',
-    'pm_id_score', 'panel_score', 'trial_score', 'affiliation_score', 'events_score', 'overall_connection_strength'
-]
-
-missing_cols = [col for col in required_columns if col not in df.columns]
-if missing_cols:
-    st.error(f"Your CSV is missing the following required columns (after internal renaming): {', '.join(missing_cols)}")
-    st.stop()
-
-# --- Add No. of Connections ---
-def calculate_connections(df_in):
-    """Calculate number of connections per NPI efficiently."""
-    npi_connections = pd.concat([
-        df_in[['npi_1']].assign(connections=1).rename(columns={'npi_1': 'npi'}),
-        df_in[['npi_2']].assign(connections=1).rename(columns={'npi_2': 'npi'})
-    ])
-    return npi_connections.groupby('npi')['connections'].sum().reset_index()
-
-# --- Add new columns for source and target based on influence scores ---
-df['is_source_1'] = df['influence_score_1'] >= df['influence_score_2']
-df['source_npi'] = np.where(df['is_source_1'], df['npi_1'], df['npi_2'])
-df['target_npi'] = np.where(df['is_source_1'], df['npi_2'], df['npi_1'])
-df['source_city'] = np.where(df['is_source_1'], df['city1'], df['city2'])
-df['source_state'] = np.where(df['is_source_1'], df['state1'], df['state2'])
-df['source_influence'] = np.where(df['is_source_1'], df['influence_score_1'], df['influence_score_2'])
-df['target_city'] = np.where(df['is_source_1'], df['city2'], df['city1'])
-df['target_state'] = np.where(df['is_source_1'], df['state2'], df['state1'])
-df['target_influence'] = np.where(df['is_source_1'], df['influence_score_2'], df['influence_score_1'])
-
-# For positions (using renamed Lat/Long columns)
-source_Long = np.where(df['is_source_1'], df['long1'], df['long2'])
-source_Lat = np.where(df['is_source_1'], df['lat1'], df['lat2'])
-target_Long = np.where(df['is_source_1'], df['long2'], df['long1'])
-target_Lat = np.where(df['is_source_1'], df['lat2'], df['lat1'])
-df['source_position'] = list(zip(source_Long, source_Lat))
-df['target_position'] = list(zip(target_Long, target_Lat))
-
-# --- Cached Functions for Filters (adjusting to new column names) ---
+# --- Cached Functions for Dynamic Filters ---
 @st.cache_data
-def get_cities_for_state(df, state):
+def get_cities_for_state(_df, state):
     if state == "All States":
-        return sorted(list(set(df['city1']).union(set(df['city2']))))
-    else:
-        return sorted(list(set(df[df['state1'] == state]['city1']).union(set(df[df['state2'] == state]['city2']))))
+        return sorted(list(set(_df['city1']).union(set(_df['city2']))))
+    return sorted(list(set(_df[_df['state1'] == state]['city1']).union(set(_df[_df['state2'] == state]['city2']))))
 
 @st.cache_data
-def get_zips_for_city(df, city):
+def get_zips_for_city(_df, city):
     if city == "All Cities":
-        return sorted(list(set(df['zip1']).union(set(df['zip2']))))
-    else:
-        return sorted(list(set(df[df['city1'] == city]['zip1']).union(set(df[df['city2'] == city]['zip2']))))
+        return sorted(list(set(_df['zip1']).union(set(_df['zip2']))))
+    return sorted(list(set(_df[_df['city1'] == city]['zip1']).union(set(_df[_df['city2'] == city]['zip2']))))
 
-# --- Function to Get HCPs Dataframe (adjusting to new column names) ---
-def get_hcps_df(data):
-    hcp1 = data[['npi_1', 'city1', 'state1', 'lat1', 'long1', 'influence_score_1']].rename(columns={
-        'npi_1': 'npi', 'city1': 'city', 'state1': 'state', 'lat1': 'lat', 'long1': 'long', 'influence_score_1': 'influence_score'
-    })
-    hcp2 = data[['npi_2', 'city2', 'state2', 'lat2', 'long2', 'influence_score_2']].rename(columns={
-        'npi_2': 'npi', 'city2': 'city', 'state2': 'state', 'lat2': 'lat', 'long2': 'long', 'influence_score_2': 'influence_score'
-    })
-    all_hcps = pd.concat([hcp1, hcp2], ignore_index=True)
-    all_hcps = all_hcps.drop_duplicates(subset='npi', keep='first')
-    return all_hcps
+# --- Sidebar for Filters ---
+with st.sidebar:
+    st.markdown("<h3>Filters</h3>", unsafe_allow_html=True)
+
+    # Double-Sided Sliders
+    overall_strength_range = st.slider(
+        "Overall Connection Strength Range",
+        min_value=float(df['overall_connection_strength'].min()),
+        max_value=float(df['overall_connection_strength'].max()),
+        value=(float(df['overall_connection_strength'].min()), float(df['overall_connection_strength'].max())),
+        step=0.1
+    )
+
+    max_influence_range = st.slider(
+        "Influence Score Range",
+        min_value=float(df['maximum_influence_score'].min()),
+        max_value=float(df['maximum_influence_score'].max()),
+        value=(float(df['maximum_influence_score'].min()), float(df['maximum_influence_score'].max())),
+        step=0.1
+    )
+
+    max_connections_range = st.slider(
+        "No. of Connections Range",
+        min_value=int(df['maximum_connections'].min()),
+        max_value=int(df['maximum_connections'].max()),
+        value=(int(df['maximum_connections'].min()), int(df['maximum_connections'].max())),
+        step=1
+    )
+
+    papers_range = st.slider(
+        "Papers Published Range",
+        min_value=int(df['papers'].min()),
+        max_value=int(df['papers'].max()),
+        value=(int(df['papers'].min()), int(df['papers'].max())),
+        step=1
+    )
+
+    panels_range = st.slider(
+        "Panels Range",
+        min_value=int(df['panels'].min()),
+        max_value=int(df['panels'].max()),
+        value=(int(df['panels'].min()), int(df['panels'].max())),
+        step=1
+    )
+
+    trials_range = st.slider(
+        "Trials Range",
+        min_value=int(df['trials'].min()),
+        max_value=int(df['trials'].max()),
+        value=(int(df['trials'].min()), int(df['trials'].max())),
+        step=1
+    )
+
+    affiliations_range = st.slider(
+        "Affiliations Range",
+        min_value=int(df['affiliations'].min()),
+        max_value=int(df['affiliations'].max()),
+        value=(int(df['affiliations'].min()), int(df['affiliations'].max())),
+        step=1
+    )
+
+    events_range = st.slider(
+        "Promotional Events Range",
+        min_value=int(df['events'].min()),
+        max_value=int(df['events'].max()),
+        value=(int(df['events'].min()), int(df['events'].max())),
+        step=1
+    )
+
+    # Dropdowns
+    interzip_options = ["All"] + sorted(list(df['interzip_connection'].dropna().unique().astype(str)))
+    interzip = st.selectbox("Interzip Connection", interzip_options)
+
+    intercity_options = ["All"] + sorted(list(df['intercity_connection'].dropna().unique().astype(str)))
+    intercity = st.selectbox("Intercity Connection", intercity_options)
+
+    interstate_options = ["All"] + sorted(list(df['interstate_connection'].dropna().unique().astype(str)))
+    interstate = st.selectbox("Interstate Connection", interstate_options)
 
 # --- Initialize Session State for Filters ---
 if 'selected_state' not in st.session_state:
@@ -179,250 +287,158 @@ if 'selected_city' not in st.session_state:
     st.session_state.selected_city = "All Cities"
 if 'selected_zip' not in st.session_state:
     st.session_state.selected_zip = "All ZIPs"
-if 'selected_score' not in st.session_state:
-    st.session_state.selected_score = "All"
-if 'selected_criterion' not in st.session_state:
-    st.session_state.selected_criterion = "Overall Score"
 
 # --- Filter Row at Top ---
-st.markdown("<h1 style='text-align: center; font-size: 24px;'>HCP Connections Map</h1>", unsafe_allow_html=True)
-filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([2, 2, 2, 2])
+st.markdown("<h1 style='text-align: center; font-size: 24px; margin-top: 5; margin-bottom: 0px;'>HCP Network Map</h1>", unsafe_allow_html=True)
+filter_col1, filter_col2, filter_col3 = st.columns(3)
 
 with filter_col1:
     states = ["All States"] + sorted(list(set(df['state1']).union(set(df['state2']))))
-    st.session_state.selected_state = st.selectbox("State", states, index=states.index(st.session_state.selected_state), key="state_filter")
+    st.session_state.selected_state = st.selectbox("State", states, key="state_filter")
+
+cities = get_cities_for_state(df, st.session_state.selected_state)
+if st.session_state.selected_city not in cities and st.session_state.selected_city != "All Cities":
+    st.session_state.selected_city = "All Cities"
+
+zips = get_zips_for_city(df, st.session_state.selected_city)
+if st.session_state.selected_zip not in zips and st.session_state.selected_zip != "All ZIPs":
+    st.session_state.selected_zip = "All ZIPs"
 
 with filter_col2:
-    cities = get_cities_for_state(df, st.session_state.selected_state)
-    # Ensure current selected_city is valid for the new state, reset if not
-    if st.session_state.selected_city not in cities and st.session_state.selected_city != "All Cities":
-        st.session_state.selected_city = "All Cities"
-    st.session_state.selected_city = st.selectbox("City", ["All Cities"] + cities, 
-                                                  index=(cities.index(st.session_state.selected_city) + 1 if st.session_state.selected_city in cities else 0), 
-                                                  key="city_filter")
-
+    st.session_state.selected_city = st.selectbox("City", ["All Cities"] + cities, key="city_filter")
 
 with filter_col3:
-    zips = get_zips_for_city(df, st.session_state.selected_city)
-    # Ensure current selected_zip is valid for the new city, reset if not
-    if st.session_state.selected_zip not in zips and st.session_state.selected_zip != "All ZIPs":
-        st.session_state.selected_zip = "All ZIPs"
-    st.session_state.selected_zip = st.selectbox("ZIP", ["All ZIPs"] + zips, 
-                                                 index=(zips.index(st.session_state.selected_zip) + 1 if st.session_state.selected_zip in zips else 0), 
-                                                 key="zip_filter")
+    st.session_state.selected_zip = st.selectbox("ZIP", ["All ZIPs"] + zips, key="zip_filter")
 
-with filter_col4:
-    score_ranges = ["All", "Low (≤ 0.5)", "Medium (0.5 - 1.0)", "High (> 1.0)"]
-    st.session_state.selected_score = st.selectbox("Connection Strength", score_ranges, index=score_ranges.index(st.session_state.selected_score), key="score_filter")
-
-# --- Apply Filters (adjusting to new column names) ---
+# --- OPTIMIZATION 2: VECTORIZED & EFFICIENT FILTERING ---
 with st.spinner("Applying filters..."):
-    filtered_df = df.copy()
-
+    conditions = []
+    
+    # Top filter row
     if st.session_state.selected_state != "All States":
-        filtered_df = filtered_df[
-            (filtered_df['state1'] == st.session_state.selected_state) | (filtered_df['state2'] == st.session_state.selected_state)
-        ]
-
+        conditions.append((df['state1'] == st.session_state.selected_state) | (df['state2'] == st.session_state.selected_state))
+    
     if st.session_state.selected_city != "All Cities":
-        filtered_df = filtered_df[
-            (filtered_df['city1'] == st.session_state.selected_city) | (filtered_df['city2'] == st.session_state.selected_city)
-        ]
+        conditions.append((df['city1'] == st.session_state.selected_city) | (df['city2'] == st.session_state.selected_city))
 
     if st.session_state.selected_zip != "All ZIPs":
-        filtered_df = filtered_df[
-            (filtered_df['zip1'] == st.session_state.selected_zip) | (filtered_df['zip2'] == st.session_state.selected_zip)
-        ]
+        conditions.append((df['zip1'].astype(str) == str(st.session_state.selected_zip)) | (df['zip2'].astype(str) == str(st.session_state.selected_zip)))
 
-    if st.session_state.selected_score != "All":
-        if st.session_state.selected_score == "Low (≤ 0.5)":
-            filtered_df = filtered_df[filtered_df['overall_connection_strength'] <= 0.5]
-        elif st.session_state.selected_score == "Medium (0.5 - 1.0)":
-            filtered_df = filtered_df[
-                (filtered_df['overall_connection_strength'] > 0.5) & 
-                (filtered_df['overall_connection_strength'] <= 1.0)
-            ]
-        elif st.session_state.selected_score == "High (> 1.0)":
-            filtered_df = filtered_df[filtered_df['overall_connection_strength'] > 1.0]
+    # Sidebar sliders
+    conditions.append((df['overall_connection_strength'] >= overall_strength_range[0]) & (df['overall_connection_strength'] <= overall_strength_range[1]))
+    conditions.append((df['maximum_influence_score'] >= max_influence_range[0]) & (df['maximum_influence_score'] <= max_influence_range[1]))
+    conditions.append((df['maximum_connections'] >= max_connections_range[0]) & (df['maximum_connections'] <= max_connections_range[1]))
+    conditions.append((df['papers'] >= papers_range[0]) & (df['papers'] <= papers_range[1]))
+    conditions.append((df['panels'] >= panels_range[0]) & (df['panels'] <= panels_range[1]))
+    conditions.append((df['trials'] >= trials_range[0]) & (df['trials'] <= trials_range[1]))
+    conditions.append((df['affiliations'] >= affiliations_range[0]) & (df['affiliations'] <= affiliations_range[1]))
+    conditions.append((df['events'] >= events_range[0]) & (df['events'] <= events_range[1]))
 
-# --- Add thickness_level column (adjusting to new column names) ---
-filtered_df['thickness_level'] = filtered_df['overall_connection_strength'].apply(
-    lambda x: 0.5 if x <= 0.5 else (1.5 if x <= 1.0 else 3)
-)
+    # Sidebar dropdowns
+    if interzip != "All":
+        conditions.append(df['interzip_connection'].astype(str) == interzip)
+    if intercity != "All":
+        conditions.append(df['intercity_connection'].astype(str) == intercity)
+    if interstate != "All":
+        conditions.append(df['interstate_connection'].astype(str) == interstate)
 
-# --- NEW: Create a pre-formatted HTML tooltip column ---
+    # Apply all filters at once
+    if conditions:
+        final_mask = np.logical_and.reduce(conditions)
+        filtered_df = df[final_mask]
+    else:
+        filtered_df = df
+
+# --- OPTIMIZATION 3: VECTORIZED TOOLTIP CREATION ---
 if not filtered_df.empty:
-    filtered_df['tooltip_html_content'] = filtered_df.apply(lambda row: f"""
-        <div class="pydeck-tooltip-custom">
-            <div><b>Source NPI:</b> {row['source_npi']}<br>
-                <b>City:</b> {row['source_city']}<br>
-                <b>State:</b> {row['source_state']}</div>
-            <div><b>Target NPI:</b> {row['target_npi']}<br>
-                <b>City:</b> {row['target_city']}<br>
-                <b>State:</b> {row['target_state']}</div>
-            <div><b>Overall Connection Strength:</b> <span class="highlight">{row['overall_connection_strength']:.2f}</span></div>
-        </div>
-    """, axis=1)
-
-# --- Prepare HCPs Data and Connections (adjusting to new column names) ---
-if not filtered_df.empty:
-    hcps_df = get_hcps_df(filtered_df)
-    connections = calculate_connections(filtered_df)
-    hcps_df = hcps_df.merge(connections, on='npi', how='left').fillna({'connections': 0})
-    hcps_df['radius'] = (hcps_df['influence_score'] / hcps_df['influence_score'].max()) * 50
+    filtered_df['tooltip_html_content'] = (
+        '<div class="pydeck-tooltip-custom">'
+        f"<div><b>Source NPI:</b> " + filtered_df['source_npi'].astype(str) + "<br>"
+        f"<b>City:</b> " + filtered_df['source_city'].astype(str) + "<br>"
+        f"<b>State:</b> " + filtered_df['source_state'].astype(str) + "</div>"
+        f"<div><b>Target NPI:</b> " + filtered_df['target_npi'].astype(str) + "<br>"
+        f"<b>City:</b> " + filtered_df['target_city'].astype(str) + "<br>"
+        f"<b>State:</b> " + filtered_df['target_state'].astype(str) + "</div>"
+        '<div><b>Overall Connection Strength:</b> <span class="highlight">' + filtered_df['overall_connection_strength'].round(2).astype(str) + '</span></div>'
+        '<div><b>Maximum Influence Score:</b> <span class="highlight">' + filtered_df['maximum_influence_score'].round(2).astype(str) + '</span></div>'
+        '<div><b>No. of Connections:</b> <span class="highlight">' + filtered_df['maximum_connections'].round(2).astype(str) + '</span></div>'
+        '<div><b>Papers:</b> ' + filtered_df['papers'].astype(str) + '</div>'
+        '<div><b>Panels:</b> ' + filtered_df['panels'].astype(str) + '</div>'
+        '<div><b>Trials:</b> ' + filtered_df['trials'].astype(str) + '</div>'
+        '<div><b>Affiliations:</b> ' + filtered_df['affiliations'].astype(str) + '</div>'
+        '<div><b>Events:</b> ' + filtered_df['events'].astype(str) + '</div>'
+        '</div>'
+    )
 else:
-    hcps_df = pd.DataFrame(columns=['npi', 'city', 'state', 'lat', 'long', 'influence_score', 'connections'])
-    st.warning("No data available after applying filters.")
+    st.warning("No data available for the selected filters.")
 
-# --- Map View State with Zoom Logic (adjusting to new column names) ---
-if 'current_zoom_level' not in st.session_state:
-    st.session_state.current_zoom_level = 3
-
-# Initialize with default values
-center_lat = 39.8283
-center_lon = -98.5795
-zoom_level = 3
+# --- OPTIMIZATION 4: CLEANER MAP VIEWSTATE LOGIC ---
+center_lat, center_lon, zoom_level = 39.8283, -98.5795, 3  # Default USA view
 
 if not filtered_df.empty:
     if st.session_state.selected_zip != "All ZIPs":
         zoom_level = 10
-        temp_df = filtered_df[(filtered_df['zip1'] == st.session_state.selected_zip) | (filtered_df['zip2'] == st.session_state.selected_zip)]
-        if not temp_df.empty:
-            center_lat = temp_df['lat1'].mean()
-            center_lon = temp_df['long1'].mean()
     elif st.session_state.selected_city != "All Cities":
         zoom_level = 8
-        temp_df = filtered_df[(filtered_df['city1'] == st.session_state.selected_city) | (filtered_df['city2'] == st.session_state.selected_city)]
-        if not temp_df.empty:
-            center_lat = temp_df['lat1'].mean()
-            center_lon = temp_df['long1'].mean()
     elif st.session_state.selected_state != "All States":
         zoom_level = 5
-        temp_df = filtered_df[(filtered_df['state1'] == st.session_state.selected_state) | (filtered_df['state2'] == st.session_state.selected_state)]
-        if not temp_df.empty:
-            center_lat = temp_df['lat1'].mean()
-            center_lon = temp_df['long1'].mean()
-    else: # If no specific filter is applied, use overall mean
-        center_lat = filtered_df['lat1'].mean()
-        center_lon = filtered_df['long1'].mean()
-
-st.session_state.current_zoom_level = zoom_level
+    
+    # Center map on the mean coordinates of the filtered data
+    center_lat = filtered_df['lat1'].mean()
+    center_lon = filtered_df['long1'].mean()
 
 view_state = pdk.ViewState(
     latitude=center_lat,
     longitude=center_lon,
     zoom=zoom_level,
-    pitch=45,
-    bearing=0
+    pitch=45
 )
 
-# --- Modified Tooltip Configuration for Pydeck ---
-# Now, the tooltip doesn't need templating; it just takes the 'html' property directly.
-# The 'html' property is derived from the 'tooltip_html_content' column.
-tooltip_config = {
-    "html": "{tooltip_html_content}"
-}
+# --- Pydeck Layer and Tooltip Configuration ---
+tooltip_config = {"html": "{tooltip_html_content}"}
 
-
-# --- Individual Connection Layers (adjusting to new column names) ---
 line_layer = pdk.Layer(
     "ArcLayer",
     data=filtered_df,
     get_source_position="source_position",
     get_target_position="target_position",
-    get_source_color=[255, 0, 0, 255],  # Red
-    get_target_color=[255, 255, 0, 255],  # Yellow
+    get_source_color=[255, 0, 0, 255],
+    get_target_color=[255, 255, 0, 255],
     get_width="thickness_level",
     width_min_pixels=1,
     width_scale=2,
     pickable=True,
     auto_highlight=True,
-    highlight_color=[255, 255, 0, 255] # Yellow highlight on hover
+    highlight_color=[255, 255, 0, 255]
 )
-
-node_layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=hcps_df,
-    get_position=["long", "lat"], # Using renamed columns
-    get_fill_color=[255, 0, 0, 160],  # Red, semi-transparent
-    get_radius="radius",
-    radius_min_pixels=2,
-    pickable=True
-)
-
-layers = [line_layer, node_layer]
 
 # --- Render Map ---
 deck = pdk.Deck(
     map_style="mapbox://styles/mapbox/streets-v11",
     initial_view_state=view_state,
-    layers=layers,
-    tooltip=tooltip_config, # Use the new tooltip_config
+    layers=[line_layer],
+    tooltip=tooltip_config,
     map_provider="mapbox",
-    api_keys={"mapbox": "pk.eyJ1IjoicGFua2FqMjYyIiwiYSI6ImNtYnRieHNrejAxd24ybHM2ZmNuYmgycHEifQ.x953HmgosIBz3j4T47xNew"}
+    api_keys={"mapbox": "pk.eyJ1IjoicGFua2FqMjYyIiwiYSI6ImNtYnRieHNrejAxd24ybHM2ZmNuYmgycHEifQ.x953HmgosIBz3j4T47xNew"}  # Replace with your Mapbox API key
 )
 
 st.pydeck_chart(deck, use_container_width=True)
 
-# --- Summary and Filter Sections (adjusting to new column names) ---
-left_col, right_col = st.columns([1, 1])
-
-with left_col:
-    st.markdown("<div class='summary-box'>", unsafe_allow_html=True)
-    st.markdown("<h3>Network Summary</h3>", unsafe_allow_html=True)
-    st.markdown(f"<p>Total Connections Shown: <span class='highlight'>{len(filtered_df):,}</span></p>", unsafe_allow_html=True)
+# --- Summary Section (Single Column Below Map) ---
+st.markdown("<div class='summary-section'>", unsafe_allow_html=True)
+st.markdown("<div class='summary-box'>", unsafe_allow_html=True)
+st.markdown("<h3>Network Summary</h3>", unsafe_allow_html=True)
+if not filtered_df.empty and pd.api.types.is_numeric_dtype(filtered_df['maximum_influence_score']):
+    total_connections = len(filtered_df)
+    highest_influence = round(float(filtered_df['maximum_influence_score'].max()), 2)
+    highest_connections = int(filtered_df['maximum_connections'].max())
+    npi_max_connections = filtered_df['npi_with_max_connections'].mode().iloc[0]
     
-    avg_strength = filtered_df['overall_connection_strength'].mean() if not filtered_df.empty else 0
-    st.markdown(f"<p>Average Connection Strength: <span class='highlight'>{avg_strength:.2f}</span></p>", unsafe_allow_html=True)
-    
-    # --- CORRECTED LOGIC FOR UNIQUE STATES AND CITIES ---
-    if st.session_state.selected_state != "All States":
-        # If a state is selected, it's 1 unique state.
-        unique_states_count = 1
-        display_states = st.session_state.selected_state
-    else:
-        # Otherwise, count unique states in the filtered data (from both NPI1 and NPI2)
-        unique_states_set = set(filtered_df['state1']).union(set(filtered_df['state2']))
-        unique_states_count = len(unique_states_set)
-        display_states = ", ".join(sorted(list(unique_states_set))) if unique_states_set else "N/A"
-
-    if st.session_state.selected_city != "All Cities":
-        # If a city is selected, it's 1 unique city.
-        unique_cities_count = 1
-        display_cities = st.session_state.selected_city
-    else:
-        # If a state is selected, but not a city, count cities within that state from filtered data
-        if st.session_state.selected_state != "All States":
-            unique_cities_set = set(filtered_df['city1']).union(set(filtered_df['city2']))
-            # Further filter cities to only those belonging to the selected state (if any)
-            # This is already handled by filtered_df if the state filter is applied, but good to be explicit
-            unique_cities_set = unique_cities_set.intersection(set(get_cities_for_state(df, st.session_state.selected_state)))
-            unique_cities_count = len(unique_cities_set)
-            display_cities = ", ".join(sorted(list(unique_cities_set))) if unique_cities_set else "N/A"
-        else:
-            # If no state or city selected, count unique cities in the filtered data
-            unique_cities_set = set(filtered_df['city1']).union(set(filtered_df['city2']))
-            unique_cities_count = len(unique_cities_set)
-            display_cities = ", ".join(sorted(list(unique_cities_set))) if unique_cities_set else "N/A"
-
-    st.markdown(f"<p>Unique States: <span class='highlight'>{unique_states_count}</span></p>", unsafe_allow_html=True)
-
-    st.markdown(f"<p>Unique Cities: <span class='highlight'>{unique_cities_count}</span></p>", unsafe_allow_html=True)
-    # --- END OF CORRECTED LOGIC ---
-
-    st.markdown("</div>", unsafe_allow_html=True) # Close the summary-box div
-
-with right_col:
-    st.markdown("<div class='filter-box'>", unsafe_allow_html=True)
-    st.markdown("<h3>Top HCPs Filter</h3>", unsafe_allow_html=True)
-    criterion = st.selectbox("Select Criterion", ["Overall Score", "Number of Connections"], key="criterion_filter")
-    st.markdown("<hr style='border: 1px solid #e0e0e0; margin: 10px 0;'>", unsafe_allow_html=True)
-    if not hcps_df.empty:
-        if criterion == "Overall Score":
-            top10 = hcps_df.sort_values(by='influence_score', ascending=False).head(10)
-        else:
-            top10 = hcps_df.sort_values(by='connections', ascending=False).head(10)
-        st.dataframe(top10[['npi', 'city', 'state', 'influence_score', 'connections']], use_container_width=True)
-    else:
-        st.markdown("<p>No data available.</p>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True) # Close the filter-box div
+    st.markdown(f"<p><b>Total Connections:</b> <span class='highlight'>{total_connections}</span></p>", unsafe_allow_html=True)
+    st.markdown(f"<p><b>Highest Influence Score:</b> <span class='highlight'>{highest_influence}</span></p>", unsafe_allow_html=True)
+    st.markdown(f"<p><b>Highest No. of Connections:</b> <span class='highlight'>{highest_connections}</span></p>", unsafe_allow_html=True)
+    st.markdown(f"<p><b>NPI with Max Connections:</b> <span class='highlight'>{npi_max_connections}</span></p>", unsafe_allow_html=True)
+else:
+    st.markdown("<p>No data available for the selected filters or non-numeric influence scores.</p>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
